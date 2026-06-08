@@ -22,15 +22,19 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# ==================== 安装函数 ====================
-do_install() {
-    echo -e ""
-    echo -e "${BLUE}====================================================${PLAIN}"
-    echo -e "${GREEN}      🚀 Rclone 服务端安装（带 Web 管理面板）${PLAIN}"
-    echo -e "${BLUE}====================================================${PLAIN}"
-    echo -e ""
+# ==================== IP 获取工具函数 ====================
+get_public_ip() {
+    local ip=$(curl -4 -s --max-time 3 ifconfig.me 2>/dev/null || true)
+    if [ -z "$ip" ]; then
+        local ipv6=$(curl -6 -s --max-time 3 ifconfig.me 2>/dev/null || true)
+        if [ -n "$ipv6" ]; then ip="[$ipv6]"; fi
+    fi
+    echo "${ip:-公网IP}"
+}
 
-    # 环境检查
+# ==================== 环境检查函数 ====================
+check_env() {
+    # 检查并安装 curl
     if ! command -v curl &> /dev/null; then
         echo -e "${YELLOW}📦 正在安装基础依赖 curl...${PLAIN}"
         if command -v apt &> /dev/null; then 
@@ -39,6 +43,24 @@ do_install() {
             yum install -y curl || true
         fi
     fi
+
+    # 检查系统是否支持 systemctl
+    if ! command -v systemctl &> /dev/null; then
+        echo -e "${RED}❌ 错误: 当前系统不支持 systemd，无法注册为守护进程服务。${PLAIN}"
+        exit 1
+    fi
+}
+
+# ==================== 安装函数 ====================
+do_install() {
+    echo -e ""
+    echo -e "${BLUE}====================================================${PLAIN}"
+    echo -e "${GREEN}      🚀 Rclone 服务端安装（带 Web 管理面板）${PLAIN}"
+    echo -e "${BLUE}====================================================${PLAIN}"
+    echo -e ""
+
+    # 执行环境依赖检查
+    check_env
 
     # 配置确认
     echo -e "${YELLOW}📝 配置 Web 面板信息（直接回车使用默认值）${PLAIN}"
@@ -118,19 +140,15 @@ EOF
         exit 1
     fi
 
-    # 获取本地/公网 IP (防多网卡干扰及超时)
-    LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' || hostname -I | awk '{print $1}')
-    PUBLIC_IP=$(curl -s --max-time 3 ifconfig.me || echo "公网IP")
+    # 动态探测外网 IP
+    PUBLIC_IP=$(get_public_ip)
 
     # 完成界面
     echo -e ""
     echo -e "${GREEN}====================================================${PLAIN}"
     echo -e "${GREEN}🎉 Rclone 服务端安装成功且运行正常！${PLAIN}"
     echo -e "====================================================${PLAIN}"
-    echo -e "🌐 内网访问：${BLUE}http://${LOCAL_IP}:${WEB_PORT}${PLAIN}"
-    if [ "$PUBLIC_IP" != "公网IP" ] && [ "$PUBLIC_IP" != "$LOCAL_IP" ]; then
-        echo -e "🌐 外网访问：${BLUE}http://${PUBLIC_IP}:${WEB_PORT}${PLAIN}"
-    fi
+    echo -e "🌐 访问地址：${BLUE}http://${PUBLIC_IP}:${WEB_PORT}${PLAIN}"
     echo -e "👤 用户名：${BLUE}${WEB_USER}${PLAIN}"
     echo -e "🔑 密码：${BLUE}${WEB_PASS}${PLAIN}"
     echo -e ""
