@@ -27,6 +27,16 @@
 
 > `IAMHC_SESSION_COOKIE` 变量由脚本首次运行时通过 `gh variable set` **自动创建**，无需手动添加。
 
+### Personal Access Token（必需，用于写回 Variables）
+
+`gh variable set` 需要 PAT 才能写入 Variables，在仓库 **Settings → Secrets and variables → Actions → Secrets** 中添加：
+
+| Secret 名称 | 值 | 说明 |
+|-------------|-----|------|
+| `GH_TOKEN` | `ghp_xxxx...` | GitHub PAT，需 `repo` 或 `actions-variables: write` 权限 |
+
+> **创建 PAT**：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → 选择仓库 `yutian81/Keepalive` → 勾选 **Actions → Variables: write** 权限
+
 ### TG 通知（可选）
 
 | Secret 名称 | 值 | 说明 |
