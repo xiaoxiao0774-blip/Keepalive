@@ -1,0 +1,20 @@
+# 账号与敏感信息（切勿提交）
+accounts.json
+.env
+*.env
+
+# 日志与调试截图
+run.log
+debug_*.png
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Playwright
+playwright-report/
+test-results/
