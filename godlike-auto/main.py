@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("godlike-auto")
 
-# 【核心配置】用户提供的精准容器直达链接
+# 【核心配置】用户提供的精准容器直达链接 (极其干净的纯净地址)
 SERVER_URL = "https://ultra.panel.godlike.host/server/fa33dea8"
 
 START_WAIT_TIMEOUT = 120
