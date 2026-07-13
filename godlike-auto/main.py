@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Godlike 服务器自动启动/保活脚本 (高防 Ultra 节点特化版)
+Godlike 服务器自动启动/保活脚本
+- 直达目标容器控制台，智能处理登录重定向
 - 支持多账号轮流操作
-- 强力抹除无头浏览器特征，穿透 Cloudflare WAF 拦截
-- 自动检测黑屏/资源加载失败并执行重载清洗
-- 自动登录 Godlike 翼龙面板 (适配折叠表单)
-- 自动选择首个服务器实例 -> 判断 Start 按钮状态 -> 启动服务器
+- 适配 ultra 节点与折叠表单
+- 通过 Kill/Restart 按钮可点击状态验证是否成功上线
 """
 
 import json
@@ -33,14 +32,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("godlike-auto")
 
-# 针对 Godlike 面板的 URL 配置 (ultra 专属节点)
-LOGIN_URL = "https://ultra.panel.godlike.host/auth/login"
-HOME_URL = "https://ultra.panel.godlike.host"
+# 【核心更新】使用用户提供的精准容器直达链接（已去除无用追踪码）
+SERVER_URL = "https://ultra.panel.godlike.host/server/fa33dea8"
 
 START_WAIT_TIMEOUT = 120
 STEP_WAIT = 3000
-LOGIN_PAGE_WAIT = 8000 # 延长初始渲染等待时间
-
+LOGIN_PAGE_WAIT = 6000
 
 # ---------------- 账号加载 ----------------
 def parse_accounts_string(raw: str):
@@ -122,34 +119,30 @@ def find_button_by_text(page: Page, texts):
                 continue
     return None, None, None
 
-# ---------------- 登录流程 ----------------
-def do_login(page: Page, email: str, password: str) -> bool:
-    logger.info(f"打开登录页: {LOGIN_URL}")
+# ---------------- 核心流程：直达与智能登录 ----------------
+def access_and_login(page: Page, email: str, password: str) -> bool:
+    logger.info(f"尝试直达服务器面板: {SERVER_URL}")
     try:
-        # 【防御升级】等待策略升级为 networkidle，确保 JS 完全下载
-        page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+        page.goto(SERVER_URL, wait_until="domcontentloaded", timeout=60000)
     except PWTimeout:
-        logger.warning("页面网络活动未在规定时间内静默，继续尝试")
+        logger.warning("页面加载超时，继续尝试")
 
     page.wait_for_timeout(LOGIN_PAGE_WAIT)
 
-    # 【黑屏/阻断自愈机制】检测是否因 WAF 拦截导致页面核心未渲染
-    if page.locator("text='Through login/password'").count() == 0 and \
-       page.locator('input[type="password"]').count() == 0:
-        logger.warning("检测到疑似黑屏或资源加载被防火墙阻断，强制刷新页面清洗状态...")
-        try:
-            page.reload(wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(6000)
-        except PWTimeout:
-            pass
+    # 检查是否被重定向到了登录页
+    if "/auth/login" not in page.url:
+        logger.info("已成功直达控制面板（跳过登录）")
+        return True
 
-    # 针对 Godlike 的折叠表单进行穿透点击
+    logger.info("系统要求身份验证，正在处理登录表单...")
+    
+    # 针对 Godlike 折叠表单的穿透点击
     try:
         toggle_loc = page.locator("text='Through login/password'").first
         if toggle_loc.count() > 0 and toggle_loc.is_visible():
-            logger.info("检测到折叠的登录表单，正在点击展开...")
+            logger.info("展开折叠的账号密码输入框...")
             toggle_loc.click()
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1500)
     except Exception:
         pass
 
@@ -166,7 +159,7 @@ def do_login(page: Page, email: str, password: str) -> bool:
 
     if not email_loc or not pwd_loc:
         page.screenshot(path=f"debug_login_{int(time.time())}.png")
-        logger.error("未找到登录表单（邮箱/密码输入框）")
+        logger.error("未找到登录表单，前端渲染异常或遭人机拦截")
         return False
 
     logger.info(f"填写账号: {email}")
@@ -174,19 +167,16 @@ def do_login(page: Page, email: str, password: str) -> bool:
     pwd_loc.fill(password)
     page.wait_for_timeout(500)
 
-    login_btn, login_sel, txt = find_button_by_text(page, ["Login", "Sign in", "Authorization"])
+    login_btn, login_sel, txt = find_button_by_text(page, ["Login", "Sign in"])
     if not login_btn:
-        login_btn, login_sel = find_first_visible(page, [
-            'button[type="submit"]',
-        ])
+        login_btn, login_sel = find_first_visible(page, ['button[type="submit"]'])
         txt = "submit(fallback)"
 
     if not login_btn:
-        page.screenshot(path=f"debug_login_{int(time.time())}.png")
         logger.error("未找到登录按钮")
         return False
 
-    logger.info(f"点击登录按钮 (text={txt})")
+    logger.info("点击登录按钮...")
     try:
         login_btn.click()
     except Exception:
@@ -200,47 +190,16 @@ def do_login(page: Page, email: str, password: str) -> bool:
     page.wait_for_timeout(STEP_WAIT)
 
     if "/auth/login" in page.url:
-        logger.error("登录后仍在登录页，可能账号密码错误或遭遇人机验证")
+        page.screenshot(path=f"debug_login_failed_{int(time.time())}.png")
+        logger.error("登录后仍在登录页，验证失败")
         return False
 
-    logger.info("登录成功")
+    logger.info("登录成功，等待重定向回控制面板...")
+    page.wait_for_timeout(4000)
     return True
 
-# ---------------- Godlike 选择服务器实例流程 ----------------
-def click_manage_server(page: Page) -> bool:
-    logger.info("寻找并进入首个服务器实例 (Server Card)")
-    page.wait_for_timeout(STEP_WAIT)
-
-    try:
-        page.wait_for_selector('a[href*="/server/"]', timeout=15000)
-        server_link = page.locator('a[href*="/server/"]').first
-        
-        if server_link.count() > 0:
-            logger.info("找到服务器实例，点击进入")
-            try:
-                server_link.click()
-            except Exception:
-                server_link.first.click(force=True)
-                
-            try:
-                page.wait_for_load_state("networkidle", timeout=30000)
-            except PWTimeout:
-                pass
-            page.wait_for_timeout(6000)
-            return True
-    except PWTimeout:
-        pass
-
-    if "/server/" in page.url:
-        logger.info("当前已在服务器实例控制台中")
-        return True
-
-    page.screenshot(path=f"debug_dashboard_{int(time.time())}.png")
-    logger.error("未找到服务器实例链接，也未处于控制台界面")
-    return False
-
 # ---------------- 启动服务器流程 ----------------
-def start_server(page: Page, console_lines: list) -> str:
+def start_server(page: Page) -> str:
     logger.info("寻找 Start 按钮")
     page.wait_for_timeout(STEP_WAIT)
 
@@ -252,7 +211,7 @@ def start_server(page: Page, console_lines: list) -> str:
     start_btn, sel, txt = find_button_by_text(page, ["Start"])
     if not start_btn:
         page.screenshot(path=f"debug_start_{int(time.time())}.png")
-        logger.error("未找到 Start 按钮")
+        logger.error("未找到 Start 按钮，面板可能未加载")
         return "no_start"
 
     clickable = is_clickable(start_btn)
@@ -289,13 +248,9 @@ def start_server(page: Page, console_lines: list) -> str:
 
 def check_stop_button(page: Page) -> str:
     stop_btn, sel, txt = find_button_by_text(page, ["Kill", "Restart", "Stop"])
-    
     if not stop_btn:
-        logger.info("未找到 Kill/Restart 按钮")
         return "not_found"
-
-    clickable = is_clickable(stop_btn)
-    return "clickable" if clickable else "exists_not_clickable"
+    return "clickable" if is_clickable(stop_btn) else "exists_not_clickable"
 
 # ---------------- 单账号处理 ----------------
 def process_account(account: dict, playwright, headless: bool = True) -> dict:
@@ -310,14 +265,9 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
     logger.info(f"========== 开始处理账号: {email} ==========")
     browser = None
     try:
-        # 【终极伪装】抹除 WebDriver 特征，物理击穿 Cloudflare Bot Fight Mode
         browser = playwright.chromium.launch(
             headless=headless,
-            args=[
-                "--no-sandbox", 
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled" 
-            ],
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         context = browser.new_context(
             viewport={"width": 1366, "height": 800},
@@ -326,28 +276,16 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
         )
         page = context.new_page()
 
-        # SPA 防御补丁
-        page.add_init_script("""
-            const originalParse = JSON.parse;
-            JSON.parse = function(text, reviver) {
-                if (text === null || text === undefined || text === '') return {};
-                try { return originalParse(text, reviver); } 
-                catch (e) { return {}; }
-            };
-        """)
-
         console_lines = []
         page.on("console", lambda msg: console_lines.append(msg.text or ""))
 
-        if not do_login(page, email, password):
-            result["error"] = "登录失败"
+        # 1. 直接访问目标容器并智能登录
+        if not access_and_login(page, email, password):
+            result["error"] = "登录或访问面板失败"
             return result
 
-        if not click_manage_server(page):
-            result["error"] = "未能进入服务器实例面板"
-            return result
-
-        status = start_server(page, console_lines)
+        # 2. 检查启动状态
+        status = start_server(page)
         result["status"] = status
         result["ok"] = status in ("started", "online")
         return result
