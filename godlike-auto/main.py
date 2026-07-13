@@ -3,8 +3,8 @@
 """
 Godlike 服务器自动启动/保活脚本
 - 直达目标容器控制台，智能处理登录重定向
-- 支持多账号轮流操作
-- 适配 ultra 节点与折叠表单
+- 采用 DOM 视觉特征判定登录态（无视 SPA 路由欺骗）
+- 适配 ultra 节点与折叠表单穿透
 - 通过 Kill/Restart 按钮可点击状态验证是否成功上线
 """
 
@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("godlike-auto")
 
-# 【核心更新】使用用户提供的精准容器直达链接（已去除无用追踪码）
+# 【核心配置】用户提供的精准容器直达链接
 SERVER_URL = "https://ultra.panel.godlike.host/server/fa33dea8"
 
 START_WAIT_TIMEOUT = 120
@@ -129,20 +129,30 @@ def access_and_login(page: Page, email: str, password: str) -> bool:
 
     page.wait_for_timeout(LOGIN_PAGE_WAIT)
 
-    # 检查是否被重定向到了登录页
-    if "/auth/login" not in page.url:
-        logger.info("已成功直达控制面板（跳过登录）")
+    # 【终极修复】放弃 URL 判断，直接扫描屏幕上是否存在登录界面的特征文字
+    needs_login = False
+    if "login" in page.url.lower():
+        needs_login = True
+    elif page.locator("text=Login to continue").count() > 0:
+        needs_login = True
+    elif page.locator("text=Through Login/Password").count() > 0:
+        needs_login = True
+    elif page.locator("text=Authorization").count() > 0:
+        needs_login = True
+
+    if not needs_login:
+        logger.info("未检测到登录框特征，判定为已成功直达控制面板（跳过登录）")
         return True
 
     logger.info("系统要求身份验证，正在处理登录表单...")
     
-    # 针对 Godlike 折叠表单的穿透点击
+    # 针对 Godlike 折叠表单的穿透点击（采用精确模糊匹配，无视大小写敏感）
     try:
-        toggle_loc = page.locator("text='Through login/password'").first
+        toggle_loc = page.locator("text=Through Login/Password").first
         if toggle_loc.count() > 0 and toggle_loc.is_visible():
             logger.info("展开折叠的账号密码输入框...")
             toggle_loc.click()
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(2000)
     except Exception:
         pass
 
@@ -189,13 +199,14 @@ def access_and_login(page: Page, email: str, password: str) -> bool:
         pass
     page.wait_for_timeout(STEP_WAIT)
 
-    if "/auth/login" in page.url:
+    # 再次用特征扫描确认是否还在登录页
+    if page.locator("text=Login to continue").count() > 0 or "login" in page.url.lower():
         page.screenshot(path=f"debug_login_failed_{int(time.time())}.png")
         logger.error("登录后仍在登录页，验证失败")
         return False
 
-    logger.info("登录成功，等待重定向回控制面板...")
-    page.wait_for_timeout(4000)
+    logger.info("登录成功，等待面板渲染...")
+    page.wait_for_timeout(5000)
     return True
 
 # ---------------- 启动服务器流程 ----------------
@@ -279,7 +290,7 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
         console_lines = []
         page.on("console", lambda msg: console_lines.append(msg.text or ""))
 
-        # 1. 直接访问目标容器并智能登录
+        # 1. 直接访问目标容器并智能判断登录态
         if not access_and_login(page, email, password):
             result["error"] = "登录或访问面板失败"
             return result
