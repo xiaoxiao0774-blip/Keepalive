@@ -3,7 +3,7 @@
 """
 Godlike 服务器自动启动/保活脚本
 - 支持多账号轮流操作
-- 自动登录 Godlike 翼龙面板
+- 自动登录 Godlike 翼龙面板 (适配 ultra 节点与折叠表单)
 - 自动选择首个服务器实例 -> 判断 Start 按钮状态 -> 启动服务器
 - 通过 Kill/Restart 按钮可点击状态验证是否成功上线
 """
@@ -32,9 +32,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("godlike-auto")
 
-# 针对 Godlike 面板的 URL 配置 (若你的面板前缀不同，请在此修改)
-LOGIN_URL = "https://panel.godlike.host/auth/login"
-HOME_URL = "https://panel.godlike.host"
+# 针对 Godlike 面板的 URL 配置 (已修正为你的 ultra 专属节点)
+LOGIN_URL = "https://ultra.panel.godlike.host/auth/login"
+HOME_URL = "https://ultra.panel.godlike.host"
 
 START_WAIT_TIMEOUT = 120
 STEP_WAIT = 3000
@@ -130,6 +130,16 @@ def do_login(page: Page, email: str, password: str) -> bool:
         logger.warning("页面加载超时，继续尝试")
 
     page.wait_for_timeout(LOGIN_PAGE_WAIT)
+
+    # 【新增免疫机制】针对 Godlike 的折叠表单进行穿透点击
+    try:
+        toggle_loc = page.locator("text='Through login/password'").first
+        if toggle_loc.count() > 0 and toggle_loc.is_visible():
+            logger.info("检测到折叠的登录表单，正在点击展开...")
+            toggle_loc.click()
+            page.wait_for_timeout(1500) # 等待输入框动画弹出
+    except Exception:
+        pass
 
     email_loc, email_sel = find_first_visible(page, [
         'input[name="username"]',
