@@ -149,14 +149,14 @@ def do_login(page: Page, email: str, password: str) -> bool:
 
     page.wait_for_timeout(LOGIN_PAGE_WAIT)
 
-    # 用户名/邮箱输入框（实测：type="text" name="username"）
+    # 用户名/邮箱输入框
     email_loc, email_sel = find_first_visible(page, [
         'input[name="username"]',
         'input[type="email"]',
         'input[name="email"]',
         'input[autocomplete="username"]',
     ])
-    # 密码输入框（实测：type="password" name="password"）
+    # 密码输入框
     pwd_loc, pwd_sel = find_first_visible(page, [
         'input[type="password"]',
         'input[name="password"]',
@@ -173,7 +173,7 @@ def do_login(page: Page, email: str, password: str) -> bool:
     pwd_loc.fill(password)
     page.wait_for_timeout(500)
 
-    # 登录按钮（实测：button[type="submit"] 文本 "Войти"）
+    # 登录按钮
     login_btn, login_sel, txt = find_button_by_text(page, [
         "Войти",          # 俄语
         "Login",          # 英语
@@ -197,14 +197,15 @@ def do_login(page: Page, email: str, password: str) -> bool:
     except Exception:
         login_btn.first.click(force=True)
 
-    # 等待跳转/加载
+    # 等待跳转/加载，引入一定的强制缓冲避免 SPA 存储污染
+    page.wait_for_timeout(2000)
     try:
         page.wait_for_load_state("networkidle", timeout=30000)
     except PWTimeout:
         logger.warning("登录后 networkidle 超时，继续流程")
     page.wait_for_timeout(STEP_WAIT)
 
-    # 检测是否登录成功（仍在 login 页则失败）
+    # 检测是否登录成功
     if "/auth/login" in page.url:
         body = (page.inner_text("body") or "")[:500].lower()
         if any(k in body for k in ["incorrect", "invalid", "неверн", "ошибк"]):
@@ -252,22 +253,12 @@ def click_manage_server(page: Page) -> bool:
     except PWTimeout:
         pass
     # SPA 渲染控制台页面需要更长时间
-    page.wait_for_timeout(6000)
+    page.wait_for_timeout(8000)
     return True
 
 
 # ---------------- 启动服务器流程 ----------------
 def start_server(page: Page, console_lines: list) -> str:
-    """
-    返回状态字符串：
-      - "started"  成功启动并验证
-      - "online"   服务器已在线（start 不可点击）
-      - "offline"  服务器离线且启动失败
-      - "no_start" 未找到 start 按钮
-
-    实测页面结构：按钮为 button[type="submit"]，文本 Start/Restart/Stop，
-    服务器在线时 Start 带 disabled 属性，Stop 可点击。
-    """
     logger.info("寻找 start 按钮")
     page.wait_for_timeout(STEP_WAIT)
 
@@ -281,6 +272,7 @@ def start_server(page: Page, console_lines: list) -> str:
     start_btn, sel, txt = find_button_by_text(page, [
         "Start",
         "Запустить",
+        "Старт",     # <--- 修正补丁：新增的俄语"启动"精准匹配
         "Power On",
         "Boot",
     ])
@@ -293,7 +285,7 @@ def start_server(page: Page, console_lines: list) -> str:
     logger.info(f"start 按钮可点击状态: {clickable}")
 
     if not clickable:
-        logger.info("start 按钮不可点击 -> 服务器可能已在线，跳过启动")
+        logger.info("start 按钮不可点击 -> 服务器可能已在线或正在启动中，跳过启动")
         if check_stop_button(page) == "clickable":
             logger.info("stop 按钮可点击，服务器确实在线")
         return "online"
@@ -336,10 +328,10 @@ def start_server(page: Page, console_lines: list) -> str:
 
 
 def check_stop_button(page: Page) -> str:
-    """返回 'clickable' / 'exists_not_clickable' / 'not_found'。"""
     stop_btn, sel, txt = find_button_by_text(page, [
         "Stop",            # 英语
-        "Остановить",      # 俄语
+        "Остановить",      # 俄语(旧)
+        "Стоп",            # <--- 修正补丁：新增的俄语"停止"精准匹配
         "Power Off",
         "Shut down",
         "Shutdown",
@@ -388,6 +380,20 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
         )
         page = context.new_page()
 
+        # 【底层免疫补丁】：拦截并修复 JSON 解析错误，防止控制台白屏死机
+        page.add_init_script("""
+            const originalParse = JSON.parse;
+            JSON.parse = function(text, reviver) {
+                if (text === null || text === undefined || text === '') return {};
+                try {
+                    return originalParse(text, reviver);
+                } catch (e) {
+                    console.warn('[Auto-Fix] 拦截到致命的 JSON 解析错误, 已自动修复:', text);
+                    return {};
+                }
+            };
+        """)
+
         # 收集控制台消息
         console_lines = []
 
@@ -395,7 +401,7 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
             text = msg.text or ""
             console_lines.append(text)
             low = text.lower()
-            if any(k in low for k in ["app is running", "error", "started", "running"]):
+            if any(k in low for k in ["app is running", "error", "started", "running", "auto-fix"]):
                 logger.info(f"[console] {text}")
 
         page.on("console", on_console)
