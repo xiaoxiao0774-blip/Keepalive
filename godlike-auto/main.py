@@ -4,8 +4,8 @@
 Godlike 服务器自动启动/保活脚本
 - 直达目标容器控制台，智能处理登录重定向
 - 采用 DOM 视觉特征判定登录态（无视 SPA 路由欺骗）
+- 修复双 Login 按钮陷阱，精准锁定 submit 元素
 - 适配 ultra 节点与折叠表单穿透
-- 通过 Kill/Restart 按钮可点击状态验证是否成功上线
 """
 
 import json
@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("godlike-auto")
 
-# 【核心配置】用户提供的精准容器直达链接 (极其干净的纯净地址)
+# 【核心配置】用户提供的精准容器直达链接
 SERVER_URL = "https://ultra.panel.godlike.host/server/fa33dea8"
 
 START_WAIT_TIMEOUT = 120
@@ -129,7 +129,6 @@ def access_and_login(page: Page, email: str, password: str) -> bool:
 
     page.wait_for_timeout(LOGIN_PAGE_WAIT)
 
-    # 【终极修复】放弃 URL 判断，直接扫描屏幕上是否存在登录界面的特征文字
     needs_login = False
     if "login" in page.url.lower():
         needs_login = True
@@ -146,7 +145,6 @@ def access_and_login(page: Page, email: str, password: str) -> bool:
 
     logger.info("系统要求身份验证，正在处理登录表单...")
     
-    # 针对 Godlike 折叠表单的穿透点击（采用精确模糊匹配，无视大小写敏感）
     try:
         toggle_loc = page.locator("text=Through Login/Password").first
         if toggle_loc.count() > 0 and toggle_loc.is_visible():
@@ -156,11 +154,12 @@ def access_and_login(page: Page, email: str, password: str) -> bool:
     except Exception:
         pass
 
+    # 【深度修复1】优化翼龙面板输入框属性优先级
     email_loc, email_sel = find_first_visible(page, [
+        'input[name="user"]',
         'input[name="username"]',
-        'input[type="text"]',
         'input[type="email"]',
-        'input[name="email"]',
+        'input[type="text"]',
     ])
     pwd_loc, pwd_sel = find_first_visible(page, [
         'input[type="password"]',
@@ -177,16 +176,20 @@ def access_and_login(page: Page, email: str, password: str) -> bool:
     pwd_loc.fill(password)
     page.wait_for_timeout(500)
 
-    login_btn, login_sel, txt = find_button_by_text(page, ["Login", "Sign in"])
+    # 【深度修复2】避开导航栏 Login 陷阱，绝对锁定 type="submit" 的真实提交按钮
+    login_btn, login_sel = find_first_visible(page, [
+        'button[type="submit"]',
+        'input[type="submit"]',
+    ])
     if not login_btn:
-        login_btn, login_sel = find_first_visible(page, ['button[type="submit"]'])
-        txt = "submit(fallback)"
+        logger.warning("未找到 submit 属性按钮，启用后备文本方案")
+        login_btn, login_sel, txt = find_button_by_text(page, ["Login", "Sign in"])
 
     if not login_btn:
-        logger.error("未找到登录按钮")
+        logger.error("彻底未找到任何登录按钮")
         return False
 
-    logger.info("点击登录按钮...")
+    logger.info("点击真实登录提交按钮...")
     try:
         login_btn.click()
     except Exception:
@@ -199,10 +202,9 @@ def access_and_login(page: Page, email: str, password: str) -> bool:
         pass
     page.wait_for_timeout(STEP_WAIT)
 
-    # 再次用特征扫描确认是否还在登录页
     if page.locator("text=Login to continue").count() > 0 or "login" in page.url.lower():
         page.screenshot(path=f"debug_login_failed_{int(time.time())}.png")
-        logger.error("登录后仍在登录页，验证失败")
+        logger.error("登录后仍在登录页，验证失败（可能密码错误或被防火墙拦截）")
         return False
 
     logger.info("登录成功，等待面板渲染...")
@@ -290,12 +292,10 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
         console_lines = []
         page.on("console", lambda msg: console_lines.append(msg.text or ""))
 
-        # 1. 直接访问目标容器并智能判断登录态
         if not access_and_login(page, email, password):
             result["error"] = "登录或访问面板失败"
             return result
 
-        # 2. 检查启动状态
         status = start_server(page)
         result["status"] = status
         result["ok"] = status in ("started", "online")
