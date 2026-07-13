@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Godlike 服务器自动启动/保活脚本
+Godlike 服务器自动启动/保活脚本 (高防 Ultra 节点特化版)
 - 支持多账号轮流操作
-- 自动登录 Godlike 翼龙面板 (适配 ultra 节点与折叠表单)
+- 强力抹除无头浏览器特征，穿透 Cloudflare WAF 拦截
+- 自动检测黑屏/资源加载失败并执行重载清洗
+- 自动登录 Godlike 翼龙面板 (适配折叠表单)
 - 自动选择首个服务器实例 -> 判断 Start 按钮状态 -> 启动服务器
-- 通过 Kill/Restart 按钮可点击状态验证是否成功上线
 """
 
 import json
@@ -32,13 +33,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("godlike-auto")
 
-# 针对 Godlike 面板的 URL 配置 (已修正为你的 ultra 专属节点)
+# 针对 Godlike 面板的 URL 配置 (ultra 专属节点)
 LOGIN_URL = "https://ultra.panel.godlike.host/auth/login"
 HOME_URL = "https://ultra.panel.godlike.host"
 
 START_WAIT_TIMEOUT = 120
 STEP_WAIT = 3000
-LOGIN_PAGE_WAIT = 6000
+LOGIN_PAGE_WAIT = 8000 # 延长初始渲染等待时间
 
 
 # ---------------- 账号加载 ----------------
@@ -125,19 +126,30 @@ def find_button_by_text(page: Page, texts):
 def do_login(page: Page, email: str, password: str) -> bool:
     logger.info(f"打开登录页: {LOGIN_URL}")
     try:
-        page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
+        # 【防御升级】等待策略升级为 networkidle，确保 JS 完全下载
+        page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
     except PWTimeout:
-        logger.warning("页面加载超时，继续尝试")
+        logger.warning("页面网络活动未在规定时间内静默，继续尝试")
 
     page.wait_for_timeout(LOGIN_PAGE_WAIT)
 
-    # 【新增免疫机制】针对 Godlike 的折叠表单进行穿透点击
+    # 【黑屏/阻断自愈机制】检测是否因 WAF 拦截导致页面核心未渲染
+    if page.locator("text='Through login/password'").count() == 0 and \
+       page.locator('input[type="password"]').count() == 0:
+        logger.warning("检测到疑似黑屏或资源加载被防火墙阻断，强制刷新页面清洗状态...")
+        try:
+            page.reload(wait_until="networkidle", timeout=60000)
+            page.wait_for_timeout(6000)
+        except PWTimeout:
+            pass
+
+    # 针对 Godlike 的折叠表单进行穿透点击
     try:
         toggle_loc = page.locator("text='Through login/password'").first
         if toggle_loc.count() > 0 and toggle_loc.is_visible():
             logger.info("检测到折叠的登录表单，正在点击展开...")
             toggle_loc.click()
-            page.wait_for_timeout(1500) # 等待输入框动画弹出
+            page.wait_for_timeout(2000)
     except Exception:
         pass
 
@@ -162,7 +174,7 @@ def do_login(page: Page, email: str, password: str) -> bool:
     pwd_loc.fill(password)
     page.wait_for_timeout(500)
 
-    login_btn, login_sel, txt = find_button_by_text(page, ["Login", "Sign in"])
+    login_btn, login_sel, txt = find_button_by_text(page, ["Login", "Sign in", "Authorization"])
     if not login_btn:
         login_btn, login_sel = find_first_visible(page, [
             'button[type="submit"]',
@@ -200,7 +212,6 @@ def click_manage_server(page: Page) -> bool:
     page.wait_for_timeout(STEP_WAIT)
 
     try:
-        # 翼龙面板通常通过 /server/ UUID 访问实例
         page.wait_for_selector('a[href*="/server/"]', timeout=15000)
         server_link = page.locator('a[href*="/server/"]').first
         
@@ -215,12 +226,11 @@ def click_manage_server(page: Page) -> bool:
                 page.wait_for_load_state("networkidle", timeout=30000)
             except PWTimeout:
                 pass
-            page.wait_for_timeout(6000) # 等待控制台界面渲染
+            page.wait_for_timeout(6000)
             return True
     except PWTimeout:
         pass
 
-    # 如果已经在实例页面（URL 包含 /server/）
     if "/server/" in page.url:
         logger.info("当前已在服务器实例控制台中")
         return True
@@ -239,7 +249,6 @@ def start_server(page: Page, console_lines: list) -> str:
     except PWTimeout:
         pass
 
-    # 针对 Godlike 面板的绿色 Start 按钮
     start_btn, sel, txt = find_button_by_text(page, ["Start"])
     if not start_btn:
         page.screenshot(path=f"debug_start_{int(time.time())}.png")
@@ -261,7 +270,6 @@ def start_server(page: Page, console_lines: list) -> str:
     except Exception:
         start_btn.first.click(force=True)
 
-    # 舍弃对日志的死等，直接循环探测停止按钮的状态变化
     logger.info(f"等待容器启动（最长 {START_WAIT_TIMEOUT}s）")
     deadline = time.time() + START_WAIT_TIMEOUT
     started = False
@@ -280,7 +288,6 @@ def start_server(page: Page, console_lines: list) -> str:
         return "offline"
 
 def check_stop_button(page: Page) -> str:
-    # 针对 Godlike 面板截图，探测 Restart 或 Kill 按钮
     stop_btn, sel, txt = find_button_by_text(page, ["Kill", "Restart", "Stop"])
     
     if not stop_btn:
@@ -303,9 +310,14 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
     logger.info(f"========== 开始处理账号: {email} ==========")
     browser = None
     try:
+        # 【终极伪装】抹除 WebDriver 特征，物理击穿 Cloudflare Bot Fight Mode
         browser = playwright.chromium.launch(
             headless=headless,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=[
+                "--no-sandbox", 
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled" 
+            ],
         )
         context = browser.new_context(
             viewport={"width": 1366, "height": 800},
@@ -314,7 +326,7 @@ def process_account(account: dict, playwright, headless: bool = True) -> dict:
         )
         page = context.new_page()
 
-        # 保留底层免疫补丁，预防 SPA 框架崩溃
+        # SPA 防御补丁
         page.add_init_script("""
             const originalParse = JSON.parse;
             JSON.parse = function(text, reviver) {
